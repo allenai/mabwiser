@@ -10,7 +10,7 @@ This module defines the public interface of the **MABWiser Library** providing a
     - ``NeighborhoodPolicy``
 """
 
-from typing import Callable, Dict, List, NamedTuple, NewType, Optional, Union
+from typing import Callable, Dict, List, NamedTuple, NewType, Optional, Union, Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,7 @@ from mabwiser.softmax import _Softmax
 from mabwiser.thompson import _ThompsonSampling
 from mabwiser.treebandit import _TreeBandit
 from mabwiser.ucb import _UCB1
+from mabwiser.batched_thompson import _BatchedThompsonSampling
 from mabwiser.utils import Arm, Constants, Num, check_false, check_true, create_rng
 
 __author__ = __author__
@@ -37,7 +38,7 @@ __version__ = __version__
 __copyright__ = __copyright__
 
 
-class LearningPolicy(NamedTuple):
+class LearningPolicy:
     class EpsilonGreedy(NamedTuple):
         """Epsilon Greedy Learning Policy.
 
@@ -417,6 +418,90 @@ class LearningPolicy(NamedTuple):
             check_true(0 <= self.alpha, ValueError("The value of alpha cannot be negative."))
 
 
+    class BatchedThompsonSampling(NamedTuple):
+        """Batched Thompson Sampling Learning Policy.
+
+        This policy implements a batched version of Thompson Sampling,
+        using Gaussian priors for each arm. It incorporates the concept
+        of cycles and batches to adaptively adjust the exploration-exploitation trade-off.
+
+        Attributes
+        ----------
+        batch_growth_factor: float
+            The factor by which to increase the batch size after each batch.
+            Default is 1.1.
+        gaussian_variance: float
+            The variance of the Gaussian prior for each arm.
+            Default is 1.0.
+        window_size: int
+            The size of the window to keep track of rewards for each arm.
+            Default is 100.
+        initial_batch_size: int
+            The initial batch size to start with.
+            Default is 1.
+        decay_factor: float
+            The factor by which to decay the rewards in the window.
+            Default is 1.0.
+        binarizer: Callable
+            If rewards are not binary, a binarizer function can be provided.
+            Given an arm decision and its corresponding reward, the binarizer function
+            returns a float value between 0 and 1 to represent the success of the decision.
+
+            The function signature of the binarizer is:
+
+            ``binarize(arm: Arm, reward: Num) -> float``
+
+        Example
+        -------
+            >>> from mabwiser.mab import MAB, LearningPolicy
+            >>> list_of_arms = ['Arm1', 'Arm2']
+            >>> decisions = ['Arm1', 'Arm1', 'Arm2', 'Arm1']
+            >>> rewards = [0.8, 0.9, 0.7, 0.6]
+            >>> mab = MAB(list_of_arms, LearningPolicy.BatchedThompsonSampling(
+            >>>     batch_growth_factor=1.2,
+            >>>     gaussian_variance=0.5,
+            >>>     window_size=50)
+            >>> )
+            >>> mab.fit(decisions, rewards)
+            >>> mab.predict()
+            'Arm1'
+
+            >>> def custom_binarizer(arm, reward):
+            ...     return min(1.0, max(0.0, reward))  # Clamp reward to [0, 1]
+            >>> mab = MAB(list_of_arms, LearningPolicy.BatchedThompsonSampling(binarizer=custom_binarizer))
+            >>> mab.fit(decisions, rewards)
+            >>> mab.predict()
+            'Arm1'
+        """
+
+        batch_growth_factor: float = 1.1
+        gaussian_variance: float = 1.0
+        window_size: int = 100
+        initial_batch_size: int = 1
+        decay_factor: float = 1.0
+        binarizer: Optional[Callable] = None
+
+        def _validate(self):
+            check_true(self.batch_growth_factor > 1.0, ValueError("Batch growth factor must be greater than 1.0"))
+            check_true(self.gaussian_variance > 0.0, ValueError("Gaussian variance must be positive"))
+            check_true(self.window_size > 0, ValueError("Window size must be greater than 0"))
+            check_true(self.initial_batch_size > 0, ValueError("Initial batch size must be greater than 0"))
+            check_true(
+                self.decay_factor >= 0.0 and self.decay_factor <= 1.0,
+                ValueError("Decay factor must be between 0 and 1"),
+            )
+            if self.binarizer:
+                check_true(
+                    callable(self.binarizer),
+                    TypeError(
+                        "Binarizer must be a callable function that "
+                        "returns a float value between 0 and 1 to represent "
+                        "the success of a given reward for a given arm decision. "
+                        "Specifically, the function signature is "
+                        "binarize(arm: Arm, reward: Num) -> float"
+                    ),
+            )
+
 class NeighborhoodPolicy(NamedTuple):
     class Clusters(NamedTuple):
         """Clusters Neighborhood Policy.
@@ -668,24 +753,32 @@ class NeighborhoodPolicy(NamedTuple):
 
 
 # LearningPolicyType is the Union of all possible learning policies
-LearningPolicyType = NewType('LearningPolicyType', Union[LearningPolicy.EpsilonGreedy,
-                                                         LearningPolicy.Popularity,
-                                                         LearningPolicy.Random,
-                                                         LearningPolicy.Softmax,
-                                                         LearningPolicy.ThompsonSampling,
-                                                         LearningPolicy.UCB1,
-                                                         LearningPolicy.LinGreedy,
-                                                         LearningPolicy.LinTS,
-                                                         LearningPolicy.LinUCB])
+LearningPolicyType = Union[
+    LearningPolicy.EpsilonGreedy,
+    LearningPolicy.Popularity,
+    LearningPolicy.Random,
+    LearningPolicy.Softmax,
+    LearningPolicy.ThompsonSampling,
+    LearningPolicy.BatchedThompsonSampling,
+    LearningPolicy.UCB1,
+    LearningPolicy.LinGreedy,
+    LearningPolicy.LinTS,
+    LearningPolicy.LinUCB,
+]
 
 
 # NeighborhoodPolicyType is the Union of all possible neighborhood policies
-NeighborhoodPolicyType = NewType('NeighborhoodPolicyType', Union[None,
-                                                                 NeighborhoodPolicy.LSHNearest,
-                                                                 NeighborhoodPolicy.Clusters,
-                                                                 NeighborhoodPolicy.KNearest,
-                                                                 NeighborhoodPolicy.Radius,
-                                                                 NeighborhoodPolicy.TreeBandit])
+NeighborhoodPolicyType = NewType(
+    "NeighborhoodPolicyType",
+    Union[
+        None,
+        NeighborhoodPolicy.LSHNearest,
+        NeighborhoodPolicy.Clusters,
+        NeighborhoodPolicy.KNearest,
+        NeighborhoodPolicy.Radius,
+        NeighborhoodPolicy.TreeBandit,
+    ],
+)
 
 
 class MAB:
@@ -750,14 +843,15 @@ class MAB:
         'Arm3'
     """
 
-    def __init__(self,
-                 arms: List[Arm],  # The list of arms
-                 learning_policy: LearningPolicyType,  # The learning policy
-                 neighborhood_policy: NeighborhoodPolicyType = None,  # The context policy, optional
-                 seed: int = Constants.default_seed,  # The random seed
-                 n_jobs: int = 1,  # Number of parallel jobs
-                 backend: str = None  # Parallel backend implementation
-                 ):
+    def __init__(
+        self,
+        arms: Sequence[Arm],  # The list of arms
+        learning_policy: LearningPolicyType,  # The learning policy
+        neighborhood_policy: NeighborhoodPolicyType = None,  # The context policy, optional
+        seed: int = Constants.default_seed,  # The random seed
+        n_jobs: int = 1,  # Number of parallel jobs
+        backend: str = None,  # Parallel backend implementation
+    ):
         """Initializes a multi-armed bandit (MAB) with the given arguments.
 
         Validates the arguments and raises exception in case there are violations.
@@ -863,6 +957,19 @@ class MAB:
             lp = _Softmax(self._rng, self.arms, self.n_jobs, self.backend, learning_policy.tau)
         elif isinstance(learning_policy, LearningPolicy.ThompsonSampling):
             lp = _ThompsonSampling(self._rng, self.arms, self.n_jobs, self.backend, learning_policy.binarizer)
+        elif isinstance(learning_policy, LearningPolicy.BatchedThompsonSampling):
+            lp = _BatchedThompsonSampling(
+                self._rng,
+                self.arms,
+                self.n_jobs,
+                self.backend,
+                learning_policy.batch_growth_factor,
+                learning_policy.gaussian_variance,
+                learning_policy.window_size,
+                learning_policy.initial_batch_size,
+                learning_policy.decay_factor,
+                learning_policy.binarizer,
+            )
         elif isinstance(learning_policy, LearningPolicy.UCB1):
             lp = _UCB1(self._rng, self.arms, self.n_jobs, self.backend, learning_policy.alpha)
         elif isinstance(learning_policy, LearningPolicy.LinGreedy):
@@ -949,6 +1056,10 @@ class MAB:
             return LearningPolicy.Softmax(lp.tau)
         elif isinstance(lp, _ThompsonSampling):
             return LearningPolicy.ThompsonSampling(lp.binarizer)
+        elif isinstance(lp, _BatchedThompsonSampling):
+            return LearningPolicy.BatchedThompsonSampling(
+                lp.batch_growth_factor, lp.gaussian_variance, lp.window_size, lp.binarizer
+            )
         elif isinstance(lp, _UCB1):
             return LearningPolicy.UCB1(lp.alpha)
         else:
@@ -1299,11 +1410,24 @@ class MAB:
         check_true(len(arms) == len(set(arms)), ValueError("The list of arms cannot contain duplicate values."))
 
         # Learning Policy type
-        check_true(isinstance(learning_policy,
-                              (LearningPolicy.EpsilonGreedy, LearningPolicy.Popularity, LearningPolicy.Random,
-                               LearningPolicy.Softmax, LearningPolicy.ThompsonSampling, LearningPolicy.UCB1,
-                               LearningPolicy.LinGreedy, LearningPolicy.LinTS, LearningPolicy.LinUCB)),
-                   TypeError("Learning Policy type mismatch."))
+        check_true(
+            isinstance(
+                learning_policy,
+                (
+                    LearningPolicy.EpsilonGreedy,
+                    LearningPolicy.Popularity,
+                    LearningPolicy.Random,
+                    LearningPolicy.Softmax,
+                    LearningPolicy.ThompsonSampling,
+                    LearningPolicy.BatchedThompsonSampling,
+                    LearningPolicy.UCB1,
+                    LearningPolicy.LinGreedy,
+                    LearningPolicy.LinTS,
+                    LearningPolicy.LinUCB,
+                ),
+            ),
+            TypeError("Learning Policy type mismatch."),
+        )
 
         # Learning policy value
         learning_policy._validate()
