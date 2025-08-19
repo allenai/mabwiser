@@ -6,8 +6,8 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from ai2i.common.algo.mabwiser.base_mab import BaseMAB
-from ai2i.common.algo.mabwiser.utils import Arm, Num, _BaseRNG
+from mabwiser.base_mab import BaseMAB
+from mabwiser.utils import Arm, Num, _BaseRNG
 
 
 class _BatchedThompsonSampling(BaseMAB):
